@@ -313,7 +313,6 @@ private:
 #     pragma omp critical
       for(unsigned i=0; i<omp_forces.size(); i++) forces[i]+=omp_forces[i];
     }
-    }
 
   // };
 
