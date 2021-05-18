@@ -315,7 +315,7 @@ private:
     }
     }
 
-  }
+  // };
 
   void compute_engkin(const int natoms,const vector<double>& masses,const vector<Vector>& velocities,double & engkin)
   {
