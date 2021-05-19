@@ -73,7 +73,6 @@
 #include <vector>
 #include <sstream>
 #include <algorithm>
-#include <limits>
 
 namespace PLMD {
 namespace lepton {
