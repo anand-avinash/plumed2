@@ -314,7 +314,7 @@ private:
       for(unsigned i=0; i<omp_forces.size(); i++) forces[i]+=omp_forces[i];
     }
 
-  // };
+  };
 
   void compute_engkin(const int natoms,const vector<double>& masses,const vector<Vector>& velocities,double & engkin)
   {
