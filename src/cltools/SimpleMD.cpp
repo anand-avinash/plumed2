@@ -376,10 +376,11 @@ private:
         // See plumed2/src/multicolvar/Angles.{cpp,h}
         Angle a;
         double angle = a.compute(r21_pbc, r23_pbc, dr21, dr23);
+        auto delta = angle -ref;
         
-        engconf += 0.5*kappa*(angle-ref);
-        auto f21 = kappa*(angle-ref)*dr21;
-        auto f23 = kappa*(angle-ref)*dr23;
+        engconf += 0.5*kappa*delta*delta;
+        auto f21 = kappa*delta*dr21;
+        auto f23 = kappa*delta*dr23;
         
         omp_forces[iatom] += f21;
         omp_forces[jatom] -= (f23 + f21);
@@ -400,29 +401,35 @@ private:
         auto r23 = positions[katom] - positions[jatom];
         auto r34 = positions[latom] - positions[katom];
         Vector r12_pbc, r23_pbc, r34_pbc, dr12, dr23, dr34;
-        pbc(cell,r12,r12_pbc);
-        pbc(cell,r23,r23_pbc);
-        pbc(cell,r34,r34_pbc);
+        pbc(cell,-r12,r12_pbc);
+        pbc(cell,-r23,r23_pbc);
+        pbc(cell,-r34,r34_pbc);
 
         // See plumed2/src/multicolvar/Torsions.{cpp,h}
         Torsion t;
+        // PBC changes nothing - verified
         double angle = t.compute(r12_pbc, r23_pbc, r34_pbc, dr12, dr23, dr34);
-        // double angle = t.compute(r12, r23, r34, dr12, dr23, dr34);
+        angle = t.compute(r12_pbc, r23_pbc, r34_pbc);
+        // double angle = t.compute(-r12, -r23, -r34, dr12, dr23, dr34);
+        // angle = t.compute(-r12, -r23, -r34);
 
-        // engconf += 0.5*kappa*(angle-ref);
-        // auto f12 = kappa*(angle-ref)*dr12;
-        // auto f23 = kappa*(angle-ref)*dr23;
-        // auto f34 = kappa*(angle-ref)*dr34;
+        auto delta = angle - ref;
 
-        engconf += 0.5*kappa*(1.0+cos(angle-ref));
-        auto f12 = -kappa*sin(angle-ref)*dr12;
-        auto f23 = -kappa*sin(angle-ref)*dr23;
-        auto f34 = -kappa*sin(angle-ref)*dr34;
+        // engconf += 0.5*kappa*(delta)*(delta);
+        // auto f12 = kappa*(delta)*dr12;
+        // auto f23 = kappa*(delta)*dr23;
+        // auto f34 = kappa*(delta)*dr34;
 
-        omp_forces[iatom] -= f12;
-        omp_forces[jatom] += (-f23 + f12);
-        omp_forces[katom] += (-f34 + f23);
-        omp_forces[latom] += f34;
+        // See: plumed2/src/multicolvar/DihedralCorrelation.cpp AND plumed2/src/multicolvar/AlphaBeta.cpp
+        engconf += kappa*(1.0+cos(delta));
+        auto f12 = -kappa*sin(delta)*dr12;
+        auto f23 = -kappa*sin(delta)*dr23;
+        auto f34 = -kappa*sin(delta)*dr34;
+
+        omp_forces[iatom] += f12;
+        omp_forces[jatom] -= (-f23 + f12);
+        omp_forces[katom] -= (-f34 + f23);
+        omp_forces[latom] -= f34;
       }// for torsions contribution
 
       // Pairs contribution
@@ -433,7 +440,8 @@ private:
         double ref = pairs_ref[i];
         double kappa = pairs_kappa[i];
         
-        auto distance = positions[iatom] - positions[jatom];
+        auto distance = positions[jatom] - positions[iatom];
+        /* Remember the no pbc flag in the pairs.dat */
         // Vector distance_pbc;
         // pbc(cell,distance,distance_pbc); // distance_pbc = \vec{r_2}-\vec{r_1}
         auto distance_mod=modulo(distance);   // r = |\vec{r_2}-\vec{r_1}|
@@ -441,8 +449,9 @@ private:
         auto delta5 = pow(delta,5);
         auto delta6 = delta5*delta;
 
-        engconf += (delta > 0 ? -kappa/(1+delta6) : -kappa);
-        auto f = (delta >0 ? 6.0*kappa*delta5/(delta6+1)/(delta6+1) : 0)*distance/distance_mod;
+        // Reference for the step function used in pairs.dat: plumed2/src/function/Custom.cpp
+        engconf += (delta > 0.0 ? -kappa/(1.0+delta6) : -kappa);
+        auto f = (delta >0.0 ? 6.0*kappa*delta5/(delta6+1.0)/(delta6+1.0) : 0.0)*distance/distance_mod;
         
         omp_forces[iatom]+=f;
         omp_forces[jatom]-=f;
