@@ -31,6 +31,11 @@
 #include <vector>
 #include <memory>
 
+#include <fstream>
+#include <iostream>
+#include "tools/Angle.h"
+#include "tools/Torsion.h"
+
 using namespace std;
 
 namespace PLMD {
@@ -87,6 +92,14 @@ class SimpleMD:
   int write_statistics_last_time_reopened;
   FILE* write_statistics_fp;
 
+  vector<int> bonds_1, bonds_2;
+  vector<double> bonds_ref, bonds_kappa;
+  vector<int> angles_1, angles_2, angles_3;
+  vector<double> angles_ref, angles_kappa;
+  vector<int> torsions_1, torsions_2, torsions_3, torsions_4;
+  vector<double> torsions_ref, torsions_kappa;
+  vector<int> pairs_1, pairs_2;
+  vector<double> pairs_ref, pairs_kappa;
 
 public:
   static void registerKeywords( Keywords& keys ) {
@@ -106,6 +119,10 @@ public:
     keys.add("compulsory","idum","0","The random number seed");
     keys.add("compulsory","ndim","3","The dimensionality of the system (some interesting LJ clusters are two dimensional)");
     keys.add("compulsory","wrapatoms","false","If true, atomic coordinates are written wrapped in minimal cell");
+    keys.add("optional","bonds_file","file containing bonds data");
+    keys.add("optional","angles_file","file containing angles data");
+    keys.add("optional","torsions_file","file containing torsions data");
+    keys.add("optional","pairs_file","file containing pairs data");
   }
 
   explicit SimpleMD( const CLToolOptions& co ) :
@@ -138,7 +155,11 @@ private:
              int&    ndim,
              int&    idum,
              double& epsilon,
-             double& sigma)
+             double& sigma,
+             string& bonds_file,
+             string& angles_file,
+             string& torsions_file,
+             string& pairs_file)
   {
 
     // Read everything from input file
@@ -193,6 +214,11 @@ private:
     parse("wrapatoms",w);
     wrapatoms=false;
     if(w.length()>0 && (w[0]=='T' || w[0]=='t')) wrapatoms=true;
+    
+    parse("bonds_file", bonds_file);
+    parse("angles_file", angles_file);
+    parse("torsions_file", torsions_file);
+    parse("pairs_file", pairs_file);
   }
 
   void read_natoms(const string & inputfile,int & natoms) {
@@ -310,6 +336,119 @@ private:
           omp_forces[jatom]-=f;
         }
       }
+
+      // Bonds contribution
+      #pragma omp for reduction(+:engconf) schedule(static,1) nowait
+      for(int i=0; i<bonds_1.size(); ++i){
+        int iatom = bonds_1[i];
+        int jatom = bonds_2[i];
+        double ref = bonds_ref[i];
+        double kappa = bonds_kappa[i];
+        
+        auto distance = positions[iatom] - positions[jatom];
+        Vector distance_pbc;
+        pbc(cell,distance,distance_pbc); // distance_pbc = \vec{r_2}-\vec{r_1}
+        auto distance_pbc_mod=modulo(distance_pbc);   // r = |\vec{r_2}-\vec{r_1}|
+        auto delta = distance_pbc_mod - ref; // r-d_0
+        
+        engconf += 0.5*kappa*delta*delta;
+        auto f = kappa*delta*distance_pbc/distance_pbc_mod;
+        
+        omp_forces[iatom]-=f;
+        omp_forces[jatom]+=f;
+      }// for bonds contribution
+
+      // Angles contribution
+      #pragma omp for reduction(+:engconf) schedule(static,1) nowait
+      for(int i=0; i<angles_1.size(); ++i){
+        int iatom = angles_1[i];
+        int jatom = angles_2[i];
+        int katom = angles_3[i];
+        double ref = angles_ref[i];
+        double kappa = angles_kappa[i];
+
+        auto r21 = positions[jatom] - positions[iatom];
+        auto r23 = positions[jatom] - positions[katom];
+        Vector r21_pbc, r23_pbc, dr21, dr23;
+        pbc(cell,r21,r21_pbc);
+        pbc(cell,r23,r23_pbc);
+        
+        // See plumed2/src/multicolvar/Angles.{cpp,h}
+        Angle a;
+        double angle = a.compute(r21_pbc, r23_pbc, dr21, dr23);
+        
+        engconf += 0.5*kappa*(angle-ref);
+        auto f21 = kappa*(angle-ref)*dr21;
+        auto f23 = kappa*(angle-ref)*dr23;
+        
+        omp_forces[iatom] += f21;
+        omp_forces[jatom] -= (f23 + f21);
+        omp_forces[katom] += f23;
+      }// for angles contribution
+
+      // Torsions contribution
+      #pragma omp for reduction(+:engconf) schedule(static,1) nowait
+      for(int i=0; i<torsions_1.size(); ++i){
+        int iatom = torsions_1[i];
+        int jatom = torsions_2[i];
+        int katom = torsions_3[i];
+        int latom = torsions_4[i];
+        double ref = torsions_ref[i];
+        double kappa = torsions_kappa[i];
+
+        auto r12 = positions[jatom] - positions[iatom];
+        auto r23 = positions[katom] - positions[jatom];
+        auto r34 = positions[latom] - positions[katom];
+        Vector r12_pbc, r23_pbc, r34_pbc, dr12, dr23, dr34;
+        pbc(cell,r12,r12_pbc);
+        pbc(cell,r23,r23_pbc);
+        pbc(cell,r34,r34_pbc);
+
+        // See plumed2/src/multicolvar/Torsions.{cpp,h}
+        Torsion t;
+        double angle = t.compute(r12_pbc, r23_pbc, r34_pbc, dr12, dr23, dr34);
+        // double angle = t.compute(r12, r23, r34, dr12, dr23, dr34);
+
+        // engconf += 0.5*kappa*(angle-ref);
+        // auto f12 = kappa*(angle-ref)*dr12;
+        // auto f23 = kappa*(angle-ref)*dr23;
+        // auto f34 = kappa*(angle-ref)*dr34;
+
+        engconf += 0.5*kappa*(1.0+cos(angle-ref));
+        auto f12 = -kappa*sin(angle-ref)*dr12;
+        auto f23 = -kappa*sin(angle-ref)*dr23;
+        auto f34 = -kappa*sin(angle-ref)*dr34;
+
+        omp_forces[iatom] -= f12;
+        omp_forces[jatom] += (-f23 + f12);
+        omp_forces[katom] += (-f34 + f23);
+        omp_forces[latom] += f34;
+      }// for torsions contribution
+
+      // Pairs contribution
+      #pragma omp for reduction(+:engconf) schedule(static,1) nowait
+      for(int i=0; i<pairs_1.size(); ++i){
+        int iatom = pairs_1[i];
+        int jatom = pairs_2[i];
+        double ref = pairs_ref[i];
+        double kappa = pairs_kappa[i];
+        
+        auto distance = positions[iatom] - positions[jatom];
+        // Vector distance_pbc;
+        // pbc(cell,distance,distance_pbc); // distance_pbc = \vec{r_2}-\vec{r_1}
+        auto distance_mod=modulo(distance);   // r = |\vec{r_2}-\vec{r_1}|
+        auto delta = distance_mod - ref; // x-r
+        auto delta5 = pow(delta,5);
+        auto delta6 = delta5*delta;
+
+        engconf += (delta > 0 ? -kappa/(1+delta6) : -kappa);
+        auto f = (delta >0 ? 6.0*kappa*delta5/(delta6+1)/(delta6+1) : 0)*distance/distance_mod;
+        
+        omp_forces[iatom]+=f;
+        omp_forces[jatom]-=f;
+      }// for pairs contribution
+
+
 #     pragma omp critical
       for(unsigned i=0; i<omp_forces.size(); i++) forces[i]+=omp_forces[i];
     }
@@ -448,6 +587,11 @@ private:
 
     Random random;                 // random numbers stream
 
+    string bonds_file;             // name of file containing bonds data
+    string angles_file;            // name of file containing angles data
+    string torsions_file;          // name of file containing torsions data
+    string pairs_file;             // name of file containing pairs data
+
     std::unique_ptr<PlumedMain> plumed;
 
 // Commenting the next line it is possible to switch-off plumed
@@ -461,7 +605,8 @@ private:
     read_input(temperature,tstep,friction,forcecutoff,
                listcutoff,nstep,nconfig,nstat,
                wrapatoms,inputfile,outputfile,trajfile,statfile,
-               maxneighbour,ndim,idum,epsilon,sigma);
+               maxneighbour,ndim,idum,epsilon,sigma, bonds_file,
+               angles_file, torsions_file, pairs_file);
 
 // number of atoms is read from file inputfile
     read_natoms(inputfile,natoms);
@@ -486,6 +631,143 @@ private:
     fprintf(out,"%s %s\n","Are atoms wrapped on output?     :",(wrapatoms?"T":"F"));
     fprintf(out,"%s %f\n","Epsilon                          :",epsilon);
     fprintf(out,"%s %f\n","Sigma                            :",sigma);
+    fprintf(out,"%s %s\n","bonds file                       :",bonds_file.c_str());
+    fprintf(out,"%s %s\n","angles file                      :",angles_file.c_str());
+    fprintf(out,"%s %s\n","torsions file                    :",torsions_file.c_str());
+    fprintf(out,"%s %s\n","pairs file                       :",pairs_file.c_str());
+
+    // Reading the bonds characteristics
+    if(bonds_file.length()!=0) {
+
+      cout << "Reading bonds characteristics..." << endl;
+      fstream datfile(bonds_file);
+      string line, str;
+      // while(!datfile.eof()){
+      while(getline(datfile,line)){
+        int i,j,n;
+        double r, k;
+        stringstream sstrm(line);        
+        sscanf(line.c_str(), "bond%d: DISTANCE ATOMS=%d,%d", &n, &i, &j);
+        getline(datfile, line);
+        stringstream sstrm2(line);
+        sscanf(line.c_str(), "RESTRAINT ARG=bond%d AT=%lf KAPPA=%lf", &n, &r, &k);
+        bonds_1.push_back(i-1);
+        bonds_2.push_back(j-1);
+        bonds_ref.push_back(r);
+        bonds_kappa.push_back(k);
+      }
+      datfile.close();
+      // bond9: DISTANCE ATOMS=10,9
+      // RESTRAINT ARG=bond9 AT=5.358068943023682 KAPPA=1000.0
+
+      for(int i=0; i<bonds_1.size(); ++i){
+        cout << "bonded atoms: " << bonds_1[i] << "-" << bonds_2[i] << " bonds_ref: " << bonds_ref[i]\
+        << " kappa: " << bonds_kappa[i] << "\n";
+      }//for
+    
+    }//if bonds_file
+
+    // Reading the angles characteristics
+    if(angles_file.length()!=0) {
+
+      cout << "Reading angles characteristics..." << endl;
+      fstream datfile(angles_file);
+      string line, str;
+      // while(!datfile.eof()){
+      while(getline(datfile,line)){
+        int i,j,l,n;
+        double r, k;
+        stringstream sstrm(line);        
+        sscanf(line.c_str(), "angle%d: ANGLE ATOMS=%d,%d,%d", &n, &i, &j, &l);
+        getline(datfile, line);
+        stringstream sstrm2(line);
+        sscanf(line.c_str(), "RESTRAINT ARG=angle%d AT=%lf KAPPA=%lf", &n, &r, &k);
+        angles_1.push_back(i-1);
+        angles_2.push_back(j-1);
+        angles_3.push_back(l-1);
+        angles_ref.push_back(r);
+        angles_kappa.push_back(k);
+      }
+      datfile.close();
+      // angle0: ANGLE ATOMS=3,1,2
+      // RESTRAINT ARG=angle0 AT=1.8209148645401 KAPPA=1000.0
+
+      for(int i=0; i<angles_1.size(); ++i){
+        cout << "angle-atoms: " << angles_1[i] << "-" << angles_2[i] << "-" << angles_3[i] << " angles_ref: " \
+        << angles_ref[i] << " kappa: " << angles_kappa[i] << "\n";
+      }//for
+    
+    }//if angles_file
+
+    // Reading the torsions characteristics
+    if(torsions_file.length()!=0) {
+
+      cout << "Reading torsions characteristics..." << endl;
+      fstream datfile(torsions_file);
+      string line, str;
+      // while(!datfile.eof()){
+      while(getline(datfile,line)){
+        int i,j,l,m,n;
+        double r, k;
+        stringstream sstrm(line);        
+        sscanf(line.c_str(), "torsion%d: TORSION ATOMS=%d,%d,%d,%d", &n, &i, &j, &l, &m);
+        getline(datfile, line);
+        stringstream sstrm2(line);
+        sscanf(line.c_str(), "RESTRAINT ARG=torsion%d AT=%lf KAPPA=%lf", &n, &r, &k);
+        torsions_1.push_back(i-1);
+        torsions_2.push_back(j-1);
+        torsions_3.push_back(l-1);
+        torsions_4.push_back(m-1);
+        torsions_ref.push_back(r);
+        torsions_kappa.push_back(k);
+      }
+      datfile.close();
+      // torsion0: TORSION ATOMS=2,1,3,4
+      // RESTRAINT ARG=torsion0 AT=-0.5529302954673767 KAPPA=100.0
+
+      for(int i=0; i<torsions_1.size(); ++i){
+        cout << "torsion-atoms: " << torsions_1[i] << "-" << torsions_2[i] << "-" << torsions_3[i] << "-" <<\
+        torsions_4[i] << " torsions_ref: " << torsions_ref[i] << " kappa: " << torsions_kappa[i] << "\n";
+      }//for
+    
+    }//if torsions_file
+
+    // Reading the pairs characteristics
+    if(pairs_file.length()!=0) {
+
+      cout << "Reading pairs characteristics..." << endl;
+      fstream datfile(pairs_file);
+      string line, str;
+      // while(!datfile.eof()){
+      while(getline(datfile,line)){
+        int i,j,n;
+        double r, k;
+        stringstream sstrm(line);        
+        sscanf(line.c_str(), "pair%d: DISTANCE ATOMS=%d,%d", &n, &i, &j);
+        getline(datfile, line);
+        stringstream sstrm2(line);
+        sscanf(line.c_str(), "contact%d: CUSTOM ARG=pair%d FUNC=%lf*(-step(%lf-x)-step(x-%*c)/(1+(x-%*c)^6)) PERIODIC=NO", &n, &n, &k, &r);
+        pairs_1.push_back(i-1);
+        pairs_2.push_back(j-1);
+        pairs_ref.push_back(r);
+        pairs_kappa.push_back(k);
+      }
+      datfile.close();
+      // pair0: DISTANCE ATOMS=1,8
+      // contact0: CUSTOM ARG=pair0 FUNC=20.0*(-step(9.833034470761303-x)-step(x-9.833034470761303)/(1+(x-9.833034470761303)^6)) PERIODIC=NO
+
+      // Removing the last added element
+      pairs_1.pop_back();
+      pairs_2.pop_back();
+      pairs_ref.pop_back();
+      pairs_kappa.pop_back();
+
+      for(int i=0; i<pairs_1.size(); ++i){
+        cout << "paired atoms: " << pairs_1[i] << "-" << pairs_2[i] << " pairs_ref: " << pairs_ref[i]\
+        << " kappa: " << pairs_kappa[i] << "\n";
+      }//for
+    
+    }//if pairs_file
 
 // Setting the seed
     random.setSeed(idum);
