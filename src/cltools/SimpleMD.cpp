@@ -413,8 +413,9 @@ private:
         // double angle = t.compute(-r12, -r23, -r34, dr12, dr23, dr34);
         // angle = t.compute(-r12, -r23, -r34);
 
-        auto delta = angle - ref;
+        double delta = angle - ref;
 
+        // Harmonic potential (incorrect)
         // engconf += 0.5*kappa*(delta)*(delta);
         // auto f12 = kappa*(delta)*dr12;
         // auto f23 = kappa*(delta)*dr23;
@@ -422,14 +423,25 @@ private:
 
         // See: plumed2/src/multicolvar/DihedralCorrelation.cpp AND plumed2/src/multicolvar/AlphaBeta.cpp
         engconf += kappa*(1.0+cos(delta));
-        auto f12 = -kappa*sin(delta)*dr12;
-        auto f23 = -kappa*sin(delta)*dr23;
-        auto f34 = -kappa*sin(delta)*dr34;
+        
+        // This portion is same as the copied snippet below
+        // auto f12 = -kappa*sin(delta)*dr12;
+        // auto f23 = -kappa*sin(delta)*dr23;
+        // auto f34 = -kappa*sin(delta)*dr34;
+        // omp_forces[iatom] += f12;
+        // omp_forces[jatom] -= (-f23 + f12);
+        // omp_forces[katom] -= (-f34 + f23);
+        // omp_forces[latom] -= f34;
 
-        omp_forces[iatom] += f12;
-        omp_forces[jatom] -= (-f23 + f12);
-        omp_forces[katom] -= (-f34 + f23);
-        omp_forces[latom] -= f34;
+        // copied from dihedralcorrelation file
+        double factor = -kappa*sin(delta);
+        dr12 *= factor;
+        dr23 *= factor;
+        dr34 *= factor;
+        omp_forces[iatom] += dr12;
+        omp_forces[jatom] += dr23-dr12;
+        omp_forces[katom] += dr34-dr23;
+        omp_forces[latom] -= dr34;
       }// for torsions contribution
 
       // Pairs contribution
@@ -669,10 +681,12 @@ private:
       // bond9: DISTANCE ATOMS=10,9
       // RESTRAINT ARG=bond9 AT=5.358068943023682 KAPPA=1000.0
 
+      /*
       for(int i=0; i<bonds_1.size(); ++i){
         cout << "bonded atoms: " << bonds_1[i] << "-" << bonds_2[i] << " bonds_ref: " << bonds_ref[i]\
         << " kappa: " << bonds_kappa[i] << "\n";
       }//for
+      */
     
     }//if bonds_file
 
@@ -701,11 +715,13 @@ private:
       // angle0: ANGLE ATOMS=3,1,2
       // RESTRAINT ARG=angle0 AT=1.8209148645401 KAPPA=1000.0
 
+      /*
       for(int i=0; i<angles_1.size(); ++i){
         cout << "angle-atoms: " << angles_1[i] << "-" << angles_2[i] << "-" << angles_3[i] << " angles_ref: " \
         << angles_ref[i] << " kappa: " << angles_kappa[i] << "\n";
       }//for
-    
+      */
+
     }//if angles_file
 
     // Reading the torsions characteristics
@@ -734,10 +750,12 @@ private:
       // torsion0: TORSION ATOMS=2,1,3,4
       // RESTRAINT ARG=torsion0 AT=-0.5529302954673767 KAPPA=100.0
 
+      /*
       for(int i=0; i<torsions_1.size(); ++i){
         cout << "torsion-atoms: " << torsions_1[i] << "-" << torsions_2[i] << "-" << torsions_3[i] << "-" <<\
         torsions_4[i] << " torsions_ref: " << torsions_ref[i] << " kappa: " << torsions_kappa[i] << "\n";
       }//for
+      */
     
     }//if torsions_file
 
@@ -771,10 +789,12 @@ private:
       pairs_ref.pop_back();
       pairs_kappa.pop_back();
 
+      /*
       for(int i=0; i<pairs_1.size(); ++i){
         cout << "paired atoms: " << pairs_1[i] << "-" << pairs_2[i] << " pairs_ref: " << pairs_ref[i]\
         << " kappa: " << pairs_kappa[i] << "\n";
       }//for
+      */
     
     }//if pairs_file
 
